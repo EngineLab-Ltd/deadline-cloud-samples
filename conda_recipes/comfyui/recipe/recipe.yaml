@@ -1,0 +1,90 @@
+# Recipe in rattler-build format.
+# See https://prefix-dev.github.io/rattler-build/latest/
+#
+# Packages ComfyUI (node-based diffusion model GUI, API and backend) for use on
+# AWS Deadline Cloud CUDA GPU service-managed fleets. The ComfyUI source is copied
+# into $PREFIX/opt/comfyui, and its Python dependencies, including PyTorch CUDA
+# wheels, are pip installed into the environment the same way upstream installs them.
+
+context:
+  version: "0.38.0"
+
+  # ComfyUI's requirements.txt leaves torch and torchvision unpinned, so this recipe
+  # pins them. The cu130 wheels need NVIDIA driver r580 or newer on the worker. Change
+  # torch_cuda_index to "cu128" for fleets that pin an older runtime driver.
+  torch_version: "2.14.1"
+  torchvision_version: "0.29.1"
+  torch_cuda_index: "cu130"
+
+package:
+  name: comfyui
+  version: ${{ version }}
+
+source:
+  - if: linux
+    then:
+      url: https://github.com/Comfy-Org/ComfyUI/archive/refs/tags/v${{ version }}.tar.gz
+      # ComfyUI publishes no checksum file. This is the sha256 of the GitHub tag archive.
+      sha256: 185a3e55b9d7e06a89064a3b0cc9644295ee033e81fbcec8d0d475ae5590a136
+      target_directory: comfyui
+
+build:
+  number: 0
+  script:
+    env:
+      TORCH_VERSION: ${{ torch_version }}
+      TORCHVISION_VERSION: ${{ torchvision_version }}
+      TORCH_CUDA_INDEX: ${{ torch_cuda_index }}
+    content:
+      - if: unix
+        then:
+          - bash $RECIPE_DIR/build.sh
+  # These build options are for repackaging the binary wheels that pip installs
+  # (torch, nvidia-*, av and others) so that they keep working as built.
+  # Text files such as the launcher and pip entry points are still prefix-relocated.
+  prefix_detection:
+    ignore_binary_files: true
+  dynamic_linking:
+    binary_relocation: false
+    missing_dso_allowlist:
+      - "**"
+
+requirements:
+  # Every pip-installed wheel is built for cp312, so the Python minor version must match.
+  host:
+    - python 3.12.*
+    - pip
+  run:
+    - python 3.12.*
+    # pip treats these as already installed because pip brings them into the host env,
+    # so they aren't in the package. torch requires setuptools, and transformers,
+    # huggingface_hub, kornia and comfy_kitchen use packaging.
+    - packaging >=20.9
+    - setuptools >=77.0.3
+
+tests:
+  - script:
+      - comfyui -h
+      - python -c "import torch, torchvision, comfyui_frontend_package, comfy_kitchen, av"
+      # Catches a later pip step silently replacing the CUDA torch build.
+      - python -c "import torch; assert torch.__version__ == '${{ torch_version }}+${{ torch_cuda_index }}', torch.__version__"
+      # Imports ComfyUI's built-in nodes, so it catches headless import failures of
+      # binary dependencies that missing_dso_allowlist hides at build time.
+      - comfyui --cpu --quick-test-for-ci --base-directory "$(mktemp -d)"
+      - test -f "$CONDA_PREFIX/opt/comfyui/pip-freeze.txt"
+      - test "$COMFYUI_LOCATION" = "$CONDA_PREFIX/opt/comfyui"
+      - test "$PYTHONUNBUFFERED" = 1
+      # Confirms the launcher passes the COMFYUI_*_DIRECTORY overrides through.
+      - 'd=$(mktemp -d) && COMFYUI_OUTPUT_DIRECTORY="$d/out" comfyui --cpu --quick-test-for-ci --base-directory "$d/base" 2>&1 | grep -F "Setting output directory to: $d/out"'
+
+about:
+  homepage: https://github.com/Comfy-Org/ComfyUI
+  # Reflects ComfyUI's own source license. The built package also bundles third-party
+  # wheels under their own licenses, including PyTorch (BSD-3-Clause) and the NVIDIA
+  # CUDA redistributables (NVIDIA license). See the README "License" section.
+  license: GPL-3.0-only
+  license_file: comfyui/LICENSE
+  summary: >
+    ComfyUI is a powerful and modular diffusion model GUI, API and backend with a
+    graph/nodes interface. This package bundles ComfyUI with PyTorch CUDA wheels for
+    Linux GPU workers.

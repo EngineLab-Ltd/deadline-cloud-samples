@@ -1,0 +1,14 @@
+condaPlatforms:
+  - platform: linux-64
+    defaultSubmit: true
+    # Nothing is compiled, so the build runs on CPU or GPU fleets. The build worker needs
+    # outbound internet to reach GitHub, PyPI and download.pytorch.org. Indexing the multi-GB
+    # package in the S3 channel runs out of memory on 16 GiB workers.
+    additionalHostRequirements:
+      amounts:
+        - name: amount.worker.memory
+          min: 24576
+    buildTool: rattler-build
+jobParameters:
+  - name: CondaChannels
+    value: conda-forge

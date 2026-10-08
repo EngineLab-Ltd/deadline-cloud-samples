@@ -1,0 +1,88 @@
+# Recipe in rattler-build format.
+# See https://prefix-dev.github.io/rattler-build/latest/
+#
+# Packages ComfyUI installed by comfy-cli (the official ComfyUI command line tool) for use on
+# AWS Deadline Cloud CUDA GPU service-managed fleets. comfy-cli clones the ComfyUI release into
+# $PREFIX/opt/comfyui and chooses and installs its Python dependencies, including the PyTorch
+# CUDA wheels. comfy-cli itself is included, and jobs use its comfy command to start ComfyUI
+# and run workflows.
+#
+# Unlike the comfyui recipe, this recipe doesn't pin torch. comfy-cli installs torch, torchvision
+# and torchaudio from the CUDA index, so the torch version is the newest one that has a matching
+# torchaudio. Each build records the result in $PREFIX/opt/comfyui/pip-freeze.txt.
+
+context:
+  version: "0.38.0"
+  comfy_cli_version: "1.22.0"
+  cuda_version: "13.0"
+
+package:
+  name: comfy
+  version: ${{ version }}
+
+build:
+  number: 0
+  script:
+    env:
+      COMFYUI_VERSION: ${{ version }}
+      COMFY_CLI_VERSION: ${{ comfy_cli_version }}
+      CUDA_VERSION: ${{ cuda_version }}
+    content:
+      - if: unix
+        then:
+          - bash $RECIPE_DIR/build.sh
+  # These build options are for repackaging the binary wheels that pip installs
+  # (torch, nvidia-*, av and others) so that they keep working as built.
+  # Text files such as the launchers and pip entry points are still prefix-relocated.
+  prefix_detection:
+    ignore_binary_files: true
+  dynamic_linking:
+    binary_relocation: false
+    missing_dso_allowlist:
+      - "**"
+
+requirements:
+  # Every pip-installed wheel is built for cp312, so the Python minor version must match.
+  host:
+    - python 3.12.*
+    - pip
+    - git
+  run:
+    - python 3.12.*
+    # comfy-cli uses GitPython, which needs a git executable.
+    - git
+    # pip treats these as already installed because pip brings them into the host env,
+    # so they aren't in the package. torch requires setuptools, and transformers,
+    # huggingface_hub, kornia and comfy_kitchen use packaging.
+    - packaging >=20.9
+    - setuptools
+
+tests:
+  - script:
+      - COMFY_NO_TELEMETRY=1 comfy --skip-prompt --help
+      - python "$COMFYUI_LOCATION/main.py" -h
+      - python -c "import torch, torchvision, comfyui_frontend_package, comfy_kitchen, av"
+      # comfy-cli chooses the torch version, but it must be a CUDA 13 build.
+      - python -c "import torch; print(torch.__version__); assert torch.version.cuda and torch.version.cuda.startswith('13.'), torch.version.cuda"
+      - test ! -d "$CONDA_PREFIX/opt/comfyui/.venv"
+      - test -f "$CONDA_PREFIX/opt/comfyui/pip-freeze.txt"
+      - test "$COMFYUI_LOCATION" = "$CONDA_PREFIX/opt/comfyui"
+      - test "$PYTHONUNBUFFERED" = 1
+      - test "$COMFY_NO_TELEMETRY" = 1
+  # Start ComfyUI with comfy launch, run a workflow with comfy run, and stop it.
+  - script:
+      - bash test_comfy_cli.sh
+    files:
+      recipe:
+        - test_comfy_cli.sh
+        - test_workflow_api.json
+
+about:
+  homepage: https://github.com/Comfy-Org/ComfyUI
+  # Reflects ComfyUI's own source license. The built package also bundles comfy-cli
+  # (GPL-3.0) and third-party wheels under their own licenses, including PyTorch
+  # (BSD-3-Clause) and the NVIDIA CUDA redistributables (NVIDIA license).
+  license: GPL-3.0-only
+  summary: >
+    ComfyUI installed by comfy-cli, the official ComfyUI command line tool, with PyTorch CUDA
+    wheels for Linux GPU workers. Includes the comfy command.
